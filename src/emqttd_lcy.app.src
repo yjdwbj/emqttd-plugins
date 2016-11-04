@@ -1,0 +1,16 @@
+{application, emqttd_lcy, 
+ [
+	{description, "emqttd lcy plugin "},
+	{vsn, "1.1.3"},
+	{registered, []},
+	{modules, []},
+	{applications, [
+        kernel,
+        stdlib,
+        epgsql,
+        eredis,
+        ecpool,
+        gen_conf]},
+	{mod, {emqttd_lcy_app, []}},
+    {env, []}
+]}.
