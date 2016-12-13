@@ -19,23 +19,25 @@
 -include("emqttd_lcy.hrl").
 -include_lib("../../../include/emqttd.hrl").
 
--export([load/1, unload/0]).
+-export([load/1,unload/0]).
 -import(emqttd_acl,[parse_query/1]).
+-import(emqttd_redis_client,[q/2]).
 
 %% Hooks functions
 
--export([on_client_connected/3, on_client_disconnected/3]).
+%%-export([on_client_connected/3]).
+         %%on_client_disconnected/3]).
 %%-export([on_client_subscribe/4, on_client_unsubscribe/4]).
 %%-export([on_session_created/3, on_session_subscribed/4, on_session_unsubscribed/4, on_session_terminated/4]).
 %%-export([on_message_publish/2, on_message_delivered/4, on_message_acked/4]).
 -export([on_message_publish/2]).
--export([on_message_delivered/4]).
+%%-export([on_message_delivered/2]).
 -export([start_time/1,publish_time/0,cancel/1]).
 
 %% Called when the plugin application start
-load(Env) ->
+load(_Env) ->
     %%emqttd:hook('client.connected', fun ?MODULE:on_client_connected/3, [Env]),
-    emqttd:hook('client.disconnected', fun ?MODULE:on_client_disconnected/3, [Env]),
+    %%emqttd:hook('client.disconnected', fun ?MODULE:on_client_disconnected/3, [Env]),
     %%emqttd:hook('client.subscribe', fun ?MODULE:on_client_subscribe/4, [Env]),
     %%emqttd:hook('client.unsubscribe', fun ?MODULE:on_client_unsubscribe/4, [Env]),
     %%emqttd:hook('session.created', fun ?MODULE:on_session_created/3, [Env]),
@@ -57,9 +59,20 @@ load(Env) ->
     
     
     InterVal = application:get_env(?APP,time_interval,60000),
-    spawn(fun() -> start_time(InterVal) end),
-    emqttd:hook('message.delivered', fun ?MODULE:on_message_delivered/4, [Env]),
-    emqttd:hook('message.publish', fun ?MODULE:on_message_publish/2, [Env]).
+    %%emqttd:hook('message.delivered', fun ?MODULE:on_message_delivered/2, []),
+    %%Expire =  application:get_env(?APP,expire,"EXPIRE %u 600"),
+    %%io:format("Expire redis is ~s~n",[Expire]),
+    case application:get_env(?APP,expire) of
+        {ok,Expire} ->
+            emqttd:hook('message.publish', fun ?MODULE:on_message_publish/2, [Expire]);
+        _ -> 
+            io:format("not found expire cmd~n"),
+            ok
+    end,
+
+
+    spawn(fun() -> start_time(InterVal) end).
+    %%emqttd:hook('message.publish', fun ?MODULE:on_message_publish/2, [Env]).
     %%emqttd:hook('message.acked', fun ?MODULE:on_message_acked/4, [Env]).
 %%
 %%
@@ -79,7 +92,7 @@ publish_time() ->
     ClientId = <<"localhost">>,
     %%Qos = 0,
     %%Retain = 0,
-    Topic = <<"/SYS/SrvTime">>,
+    Topic = ?SYSTIME,
     Payload = list_to_binary(strftime(os:timestamp())),
     Msg = emqttd_message:make(ClientId,Topic,Payload),
     emqttd:publish(Msg).
@@ -99,17 +112,15 @@ datetime(Timestamp) when is_integer(Timestamp) ->
     calendar:datetime_to_gregorian_seconds({{1970,1,1}, {0,0,0}})),
     calendar:universal_time_to_local_time(Universal).
 
-on_client_connected(ConnAck, Client = #mqtt_client{client_id = ClientId}, _Env) ->
-    %%io:format("client ~s connected, connack: ~w~n", [ClientId, ConnAck]),
-    ClientId,
-    ConnAck,
-    {ok, Client}.
+%%on_client_connected(_ConnAck, _Client = #mqtt_client{client_id = ClientId}, _Env) ->
+%%    %%io:format("client ~s connected, connack: ~w~n", [ClientId, ConnAck]),
+%%    {ok, _Client}.
 
-on_client_disconnected(Reason, _Client = #mqtt_client{client_id = ClientId}, _Env) ->
-    Reason,
-    ClientId,
-    %%io:format("client ~s disconnected, reason: ~w~n", [ClientId, Reason]),
-    ok.
+%%on_client_disconnected(Reason, _Client = #mqtt_client{client_id = ClientId}, _Env) ->
+%%    Reason,
+%%    ClientId,
+%%    %%io:format("client ~s disconnected, reason: ~w~n", [ClientId, Reason]),
+%%    ok.
 
 %%on_client_subscribe(ClientId, Username, TopicTable, _Env) ->
 %%    io:format("client(~s/~s) will subscribe: ~p~n", [Username, ClientId, TopicTable]),
@@ -134,21 +145,27 @@ on_client_disconnected(Reason, _Client = #mqtt_client{client_id = ClientId}, _En
 %%    io:format("session(~s/~s) terminated: ~p.", [ClientId, Username, Reason]).
 %%
 %%%% transform message and return
-on_message_publish(Message = #mqtt_message{topic = <<"#", _/binary>>}, _Env) ->
-    Message,
-    ok;
+on_message_publish(Message,ExpireKey) ->
+    %% 发布者的token重置600秒
+    case Message#mqtt_message.sender of 
+        undefined ->
+            %%io:format("system push undefined~n"),
+            {ok,Message} ;
+
+        Sender ->
+            io:format("user publish ~s~n",[Message#mqtt_message.sender]),
+            q(ExpireKey,#mqtt_client{username = Sender}),
+            {ok,Message}
+    end.
     %%{ok, Message};
 
-on_message_publish(Message, _Env) ->
-    %%io:format("publish ~s~n", [emqttd_message:format(Message)]),
-    %%{ok, Message}.
-    Message,
-    ok.
-
-on_message_delivered(ClientId, Username, Message, _Env) ->
-    %%io:format("delivered to client(~s/~s): ~s~n", [Username, ClientId, emqttd_message:format(Message)]),
-    Username,ClientId,Message,
-    {ok, Message}.
+%%on_message_publish(Message, _Env) 
+%%    %%io:format("publish ~s~n", [emqttd_message:format(Message)]),
+%%    {ok, Message}.
+%%
+%%on_message_delivered(ClientId, Message) ->
+%%    %%io:format("delivered to client(~p/~p): ~n", [ClientId, emqttd_message:format(Message)]),
+%%    q("EXPIRE %u 600",#mqtt_client{username = Message#mqtt_message.sender}).
 
 %%on_message_acked(ClientId, Username, Message, _Env) ->
 %%    io:format("client(~s/~s) acked: ~s~n", [Username, ClientId, emqttd_message:format(Message)]),
@@ -156,15 +173,15 @@ on_message_delivered(ClientId, Username, Message, _Env) ->
 
 %% Called when the plugin application stop
 unload() ->
-    emqttd:unhook('client.connected', fun ?MODULE:on_client_connected/3),
-    emqttd:unhook('client.disconnected', fun ?MODULE:on_client_disconnected/3),
-    %%emqttd:unhook('client.subscribe', fun ?MODULE:on_client_subscribe/4),
-    %%emqttd:unhook('client.unsubscribe', fun ?MODULE:on_client_unsubscribe/4),
-    %%emqttd:unhook('session.subscribed', fun ?MODULE:on_session_subscribed/4),
-    %%emqttd:unhook('session.unsubscribed', fun ?MODULE:on_session_unsubscribed/4),
-    emqttd:unhook('message.delivered', fun ?MODULE:on_message_delivered/4),
+%%    %%emqttd:unhook('client.connected', fun ?MODULE:on_client_connected/3),
+%%    %%emqttd:unhook('client.disconnected', fun ?MODULE:on_client_disconnected/3),
+%%    %%emqttd:unhook('client.subscribe', fun ?MODULE:on_client_subscribe/4),
+%%    %%emqttd:unhook('client.unsubscribe', fun ?MODULE:on_client_unsubscribe/4),
+%%    %%emqttd:unhook('session.subscribed', fun ?MODULE:on_session_subscribed/4),
+%%    %%emqttd:unhook('session.unsubscribed', fun ?MODULE:on_session_unsubscribed/4),
+%%    %%emqttd:unhook('message.delivered', fun ?MODULE:on_message_delivered/4),
     emqttd:unhook('message.publish', fun ?MODULE:on_message_publish/2).
-    %%emqttd:unhook('message.acked', fun ?MODULE:on_message_acked/4).
+%%    %%emqttd:unhook('message.acked', fun ?MODULE:on_message_acked/4).
 
 
 if_cmd_enabled(Name, Fun) ->
